@@ -1,0 +1,3 @@
+[] NbMan通信套件(使用ROS2 topic 发布idp3 所预测的action action可以是末端位姿也可以是关节角度 包括灵巧手的动作)
+[] 基于zarr的avp遥操作流程(需要记录action\img\point_cloud\state)
+[] 
