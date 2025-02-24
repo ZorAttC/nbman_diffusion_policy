@@ -6,7 +6,16 @@ import os, re, subprocess
 import cv2
 import zarr
 from threading import Lock
-
+import threading
+import queue
+def keyboard_input(key_queue):
+    """线程函数，用于捕捉键盘输入并将命令放入队列"""
+    while True:
+        key = input("Press 's' to start recording, 'q' to stop and save: ")
+        if key in ['s', 'q']:
+            key_queue.put(key)
+        else:
+            print("Invalid key. Please press 's' or 'q'.")
 # ROS2
 from tf2_ros import TransformBroadcaster
 import rclpy
@@ -24,7 +33,8 @@ from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from rclpy.duration import Duration
-
+def stamp_to_float64(stamp):
+    return np.float64(stamp.sec) + np.float64(stamp.nanosec) * 1e-9
 class Main_Node(Node):
     def __init__(self):
         super().__init__("bag_recorder")
@@ -33,11 +43,13 @@ class Main_Node(Node):
         self.lock = Lock()
         self.recording = False
         self.data = {
-            'states': [],
-            'actions': [],
-            'images': [],
-            'pointclouds': []
+                'timestamps': [],#
+                'states': [],#(ts,[right_arm_joint, left_arm_joint, right_hand_joint, left_hand_joint]6,6,6,6)
+                'actions': [],#(ts,[right_arm_action, left_arm_action, right_hand_action, left_hand_action]7,7,6,6)
+                'images': [],
+                'pointclouds': []
         }
+
         self.latest_timeStamp=None
         # Initialize the action buffers for arm/hand data
         self.right_arm_action = None
@@ -91,9 +103,9 @@ class Main_Node(Node):
 
             # 转换为 (n, 6) 的 NumPy 数组
             point_cloud_array = np.array(point_list, dtype=np.float32)
-            self.d435i_pointcloud=((msg.header.stamp, point_cloud_array))
+            self.d435i_pointcloud=((stamp_to_float64(msg.header.stamp), point_cloud_array))
             with self.lock:
-                self.data['pointclouds'].append((msg.header.stamp, point_cloud_array))
+                self.data['pointclouds'].append((stamp_to_float64(msg.header.stamp), point_cloud_array))
         except Exception as e:
             self.get_logger().error(f"Error processing point cloud: {e}")
 
@@ -109,9 +121,10 @@ class Main_Node(Node):
             self.right_hand_action = None
             self.left_hand_action = None
     def joint_state_callback(self, msg):
+        
         if not self.recording:
             return
-        
+      
         right_hand_joint = np.zeros((1, 6), dtype=np.float32)
         left_hand_joint = np.zeros((1, 6), dtype=np.float32)
         right_arm_joint = np.zeros((1, 6), dtype=np.float32)
@@ -171,9 +184,9 @@ class Main_Node(Node):
                 right_hand_joint[0][5] = msg.effort[msg.name.index(name)]
            
         with self.lock:
-            self.latest_timeStamp=msg.header.stamp
+            self.latest_timeStamp=stamp_to_float64(msg.header.stamp)
             state = np.concatenate([right_arm_joint, left_arm_joint, right_hand_joint, left_hand_joint], axis=0)
-            self.data['states'].append((msg.header.stamp, state))
+            self.data['states'].append((stamp_to_float64(msg.header.stamp), state))
 
     def right_arm_callback(self, msg):
         if not self.recording:
@@ -207,7 +220,7 @@ class Main_Node(Node):
         with self.lock:
             try:
                 cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-                self.data['images'].append((msg.header.stamp, cv_image))
+                self.data['images'].append((stamp_to_float64(msg.header.stamp), cv_image))
             except Exception as e:
                 self.get_logger().error(f"Error processing d435i image: {e}")
 
@@ -217,41 +230,116 @@ class Main_Node(Node):
         self.recording = True
         self.get_logger().info("Started recording")
 
-    def stop_recording(self, save_path):
+    def stop_recording(self, save_name):
         self.recording = False
         self.get_logger().info("Stopped recording")
+        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        save_path = os.path.join(data_dir, save_name)
         self.save_data(save_path)
 
     def save_data(self, save_path):
         with self.lock:
-            zarr.save(save_path, self.data)
+            # 创建 zarr 文件
+            store = zarr.DirectoryStore(save_path)
+            root = zarr.group(store=store, overwrite=True)
+
+            # 存储 timestamps
+            if self.data['timestamps']:
+                root.array('timestamps', np.array(self.data['timestamps']), chunks=(1000,), dtype='float64')
+            else:
+                root.array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
+                self.get_logger().info("No timestamps to save, storing empty array")
+
+            # 存储 states
+            root.create_group('states')
+            if self.data['states']:
+                states_timestamps = np.array([s[0] for s in self.data['states']])
+                states_data = np.array([s[1] for s in self.data['states']])  # shape: (n_samples, 24)
+                root['states'].array('timestamps', states_timestamps, chunks=(1000,), dtype='float64')
+                root['states'].array('data', states_data, chunks=(1000, 24), dtype='float64')
+            else:
+                root['states'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
+                root['states'].array('data', np.array([], dtype=np.float64).reshape(0, 24), chunks=(1000, 24), dtype='float64')
+                self.get_logger().info("No states to save, storing empty arrays")
+
+            # 存储 actions
+            root.create_group('actions')
+            if self.data['actions']:
+                actions_timestamps = np.array([a[0] for a in self.data['actions']])
+                actions_data = np.array([a[1] for a in self.data['actions']])  # shape: (n_samples, 26)
+                root['states'].array('timestamps', actions_timestamps, chunks=(1000,), dtype='float64')
+                root['states'].array('data', actions_data, chunks=(1000, 26), dtype='float64')
+            else:
+                root['actions'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
+                root['actions'].array('data', np.array([], dtype=np.float64).reshape(0, 26), chunks=(1000, 26), dtype='float64')
+                self.get_logger().info("No actions to save, storing empty arrays")
+
+            # 存储 images (uint8)
+            root.create_group('images')
+            if self.data['images']:
+                images_timestamps = np.array([img[0] for img in self.data['images']])
+                images_data = np.array([img[1] for img in self.data['images']], dtype=np.uint8)  # shape: (n_samples, 224, 224, 3)
+                root['images'].array('timestamps', images_timestamps, chunks=(1000,), dtype='float64')
+                root['images'].array('data', images_data, chunks=(100, 224, 224, 3), dtype='uint8')
+            else:
+                root['images'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
+                root['images'].array('data', np.array([], dtype=np.uint8).reshape(0, 224, 224, 3), chunks=(100, 224, 224, 3), dtype='uint8')
+                self.get_logger().info("No images to save, storing empty arrays")
+
+            # 存储 pointclouds (float32，每帧点数可变)
+            pointclouds_group = root.create_group('pointclouds')
+            if self.data['pointclouds']:
+                pointclouds_timestamps = np.array([pc[0] for pc in self.data['pointclouds']])
+                pointclouds_group.array('timestamps', pointclouds_timestamps, chunks=(1000,), dtype='float64')
+                for i, (ts, pc) in enumerate(self.data['pointclouds']):
+                    pointclouds_group.array(f'data_{i}', pc, chunks=(None, 3), dtype='float32')
+            else:
+                pointclouds_group.array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
+                self.get_logger().info("No pointclouds to save, storing empty timestamps only")
+
+            # 日志记录
             self.get_logger().info(f"Data saved to {save_path}")
+
+            # 重置 self.data
             self.data = {
-                'timestamps': [],#
-                'states': [],#(ts,[right_arm_joint, left_arm_joint, right_hand_joint, left_hand_joint]6,6,6,6)
-                'actions': [],#(ts,[right_arm_action, left_arm_action, right_hand_action, left_hand_action]7,7,6,6)
+                'timestamps': [],
+                'states': [],
+                'actions': [],
                 'images': [],
                 'pointclouds': []
             }
-
 def main(args=None):
     rclpy.init(args=args)
     node = Main_Node()
     executor = SingleThreadedExecutor()
     executor.add_node(node)
 
+
+    # 创建队列用于线程间通信
+    key_queue = queue.Queue()
+
+    # 启动键盘输入线程
+    input_thread = threading.Thread(target=keyboard_input, args=(key_queue,), daemon=True)
+    input_thread.start()
     try:
         while rclpy.ok():
-            key = input("Press 's' to start recording, 'q' to stop and save: ")
-            if key == 's':
-                node.start_recording()
-            elif key == 'q':
-                save_path = input("Enter the save path: ")
-                node.stop_recording(save_path)
-            else:
-                print("Invalid key. Please press 's' or 'q'.")
+            # 在主线程中执行 spin 处理 ROS 回调
+            executor.spin_once(timeout_sec=0.0)
+
+            # 检查队列中是否有键盘输入
+            try:
+                key = key_queue.get_nowait()  # 非阻塞获取
+                if key == 's':
+                    node.start_recording()
+                elif key == 'q':
+                    save_name = 'test'+datetime.now().strftime("%Y%m%d_%H%M%S") + ".zarr"
+                    node.stop_recording(save_name)
+            except queue.Empty:
+                pass  # 队列为空，继续循环
+
     except KeyboardInterrupt:
-        pass
+        print("Received Ctrl+C, shutting down...")
     finally:
         executor.shutdown()
         node.destroy_node()
