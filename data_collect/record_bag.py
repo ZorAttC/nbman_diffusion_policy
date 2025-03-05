@@ -52,10 +52,10 @@ class Main_Node(Node):
 
         self.latest_timeStamp=None
         # Initialize the action buffers for arm/hand data
-        self.right_arm_action = None
-        self.left_arm_action = None
-        self.right_hand_action = None
-        self.left_hand_action = None
+        self.right_arm_action = np.ones(7, dtype=np.float64)*-202.0
+        self.left_arm_action = np.ones(7, dtype=np.float64)*-202.0
+        self.right_hand_action = np.ones(6, dtype=np.float64)*-202.0
+        self.left_hand_action = np.ones(6, dtype=np.float64)*-202.0
         self.recording_freq=60.0
         # Initialize the pointcloud
         self.d435i_pointcloud = None
@@ -64,10 +64,10 @@ class Main_Node(Node):
 
     
 
-        self.create_timer(self.recording_freq, self.aggregate_action, callback_group=self.callback_group) 
+        self.create_timer(1.0/self.recording_freq, self.aggregate_action, callback_group=self.callback_group) 
 
-        self.create_subscription(PointCloud2, "/camera_d435i/depth/color/points", self.d435i_pointcloud_callback, 10, callback_group=self.callback_group)
-        self.create_subscription(Image, "/camera_d435i/color/image_raw", self.d435i_image_callback, 10, callback_group=self.callback_group)
+        self.create_subscription(PointCloud2, "/camera_l515_left/depth/color/downsampled_points", self.d435i_pointcloud_callback, 10, callback_group=self.callback_group)
+        self.create_subscription(Image, "/camera_l515_left/color/image_downsampled", self.d435i_image_callback, 10, callback_group=self.callback_group)
         # self.create_subscription(PointCloud2, "/camera_l515_left/depth/color/points", self.left_pointcloud_callback, 10, callback_group=self.callback_group)
         # self.create_subscription(Image, "/camera_l515_left/color/image_raw", self.lhand_image_callback, 10, callback_group=self.callback_group)
         # self.create_subscription(PointCloud2, "/camera_l515_right/depth/color/points", self.right_pointcloud_callback, 10, callback_group=self.callback_group)
@@ -96,9 +96,10 @@ class Main_Node(Node):
             for point in points:
                 x, y, z, rgb = point
                 # 将 rgb 转换为 r, g, b
-                r = (rgb >> 16) & 0xFF
-                g = (rgb >> 8) & 0xFF
-                b = rgb & 0xFF
+                rgb_int = int(rgb)
+                r = (rgb_int >> 16) & 0xFF
+                g = (rgb_int >> 8) & 0xFF
+                b = rgb_int & 0xFF
                 point_list.append([x, y, z, r, g, b])
 
             # 转换为 (n, 6) 的 NumPy 数组
@@ -110,16 +111,10 @@ class Main_Node(Node):
             self.get_logger().error(f"Error processing point cloud: {e}")
 
     def aggregate_action(self):
+        if not self.recording:
+            return
         with self.lock:
-            if self.right_arm_action is not None and  \
-                self.left_arm_action is not None and \
-                self.right_hand_action is not None and\
-                self.left_hand_action is not None:
-                self.data['actions'].append((self.latest_timeStamp, np.concatenate((self.right_arm_action, self.left_arm_action, self.right_hand_action, self.left_hand_action),axis=0)))
-            self.right_arm_action = None
-            self.left_arm_action = None
-            self.right_hand_action = None
-            self.left_hand_action = None
+            self.data['actions'].append((self.latest_timeStamp, np.hstack((self.right_arm_action, self.left_arm_action, self.right_hand_action, self.left_hand_action))))
     def joint_state_callback(self, msg):
         
         if not self.recording:
@@ -158,30 +153,30 @@ class Main_Node(Node):
                 left_arm_joint[0][5] = msg.position[msg.name.index(name)]
             
             if "left_hand_thumb_rotation" in name:
-                left_hand_joint[0][0] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][0] = msg.position[msg.name.index(name)]
             if "left_hand_thumb_bend" in name:
-                left_hand_joint[0][1] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][1] = msg.position[msg.name.index(name)]
             if "left_hand_index" in name:
-                left_hand_joint[0][2] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][2] = msg.position[msg.name.index(name)]
             if "left_hand_middle" in name:
-                left_hand_joint[0][3] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][3] = msg.position[msg.name.index(name)]
             if "left_hand_ring" in name:
-                left_hand_joint[0][4] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][4] = msg.position[msg.name.index(name)]
             if "left_hand_pinky" in name:
-                left_hand_joint[0][5] = msg.effort[msg.name.index(name)]
+                left_hand_joint[0][5] = msg.position[msg.name.index(name)]
             
             if "right_hand_thumb_rotation" in name:
-                right_hand_joint[0][0] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][0] = msg.position[msg.name.index(name)]
             if "right_hand_thumb_bend" in name:
-                right_hand_joint[0][1] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][1] = msg.position[msg.name.index(name)]
             if "right_hand_index" in name:
-                right_hand_joint[0][2] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][2] = msg.position[msg.name.index(name)]
             if "right_hand_middle" in name:
-                right_hand_joint[0][3] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][3] = msg.position[msg.name.index(name)]
             if "right_hand_ring" in name:
-                right_hand_joint[0][4] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][4] = msg.position[msg.name.index(name)]
             if "right_hand_pinky" in name:
-                right_hand_joint[0][5] = msg.effort[msg.name.index(name)]
+                right_hand_joint[0][5] = msg.position[msg.name.index(name)]
            
         with self.lock:
             self.latest_timeStamp=stamp_to_float64(msg.header.stamp)
@@ -201,6 +196,7 @@ class Main_Node(Node):
         if not self.recording:
             return
         with self.lock:
+            # print("left arm callback")
             action = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z, 
                                   msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w],dtype=np.float64)
             self.left_arm_action=action
@@ -243,14 +239,6 @@ class Main_Node(Node):
             # 创建 zarr 文件
             store = zarr.DirectoryStore(save_path)
             root = zarr.group(store=store, overwrite=True)
-
-            # 存储 timestamps
-            if self.data['timestamps']:
-                root.array('timestamps', np.array(self.data['timestamps']), chunks=(1000,), dtype='float64')
-            else:
-                root.array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
-                self.get_logger().info("No timestamps to save, storing empty array")
-
             # 存储 states
             root.create_group('states')
             if self.data['states']:
@@ -258,6 +246,7 @@ class Main_Node(Node):
                 states_data = np.array([s[1] for s in self.data['states']])  # shape: (n_samples, 24)
                 root['states'].array('timestamps', states_timestamps, chunks=(1000,), dtype='float64')
                 root['states'].array('data', states_data, chunks=(1000, 24), dtype='float64')
+                self.get_logger().info(f"Saved {len(self.data['states'])} states")
             else:
                 root['states'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
                 root['states'].array('data', np.array([], dtype=np.float64).reshape(0, 24), chunks=(1000, 24), dtype='float64')
@@ -268,8 +257,9 @@ class Main_Node(Node):
             if self.data['actions']:
                 actions_timestamps = np.array([a[0] for a in self.data['actions']])
                 actions_data = np.array([a[1] for a in self.data['actions']])  # shape: (n_samples, 26)
-                root['states'].array('timestamps', actions_timestamps, chunks=(1000,), dtype='float64')
-                root['states'].array('data', actions_data, chunks=(1000, 26), dtype='float64')
+                root['actions'].array('timestamps', actions_timestamps, chunks=(1000,), dtype='float64')
+                root['actions'].array('data', actions_data, chunks=(1000, 26), dtype='float64')
+                self.get_logger().info(f"Saved {len(self.data['actions'])} actions")
             else:
                 root['actions'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
                 root['actions'].array('data', np.array([], dtype=np.float64).reshape(0, 26), chunks=(1000, 26), dtype='float64')
@@ -282,6 +272,7 @@ class Main_Node(Node):
                 images_data = np.array([img[1] for img in self.data['images']], dtype=np.uint8)  # shape: (n_samples, 224, 224, 3)
                 root['images'].array('timestamps', images_timestamps, chunks=(1000,), dtype='float64')
                 root['images'].array('data', images_data, chunks=(100, 224, 224, 3), dtype='uint8')
+                self.get_logger().info(f"Saved {len(self.data['images'])} images")
             else:
                 root['images'].array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
                 root['images'].array('data', np.array([], dtype=np.uint8).reshape(0, 224, 224, 3), chunks=(100, 224, 224, 3), dtype='uint8')
@@ -294,6 +285,7 @@ class Main_Node(Node):
                 pointclouds_group.array('timestamps', pointclouds_timestamps, chunks=(1000,), dtype='float64')
                 for i, (ts, pc) in enumerate(self.data['pointclouds']):
                     pointclouds_group.array(f'data_{i}', pc, chunks=(None, 3), dtype='float32')
+                self.get_logger().info(f"Saved {len(self.data['pointclouds'])} pointclouds")
             else:
                 pointclouds_group.array('timestamps', np.array([], dtype=np.float64), chunks=(1000,), dtype='float64')
                 self.get_logger().info("No pointclouds to save, storing empty timestamps only")
@@ -335,6 +327,7 @@ def main(args=None):
                 elif key == 'q':
                     save_name = 'test'+datetime.now().strftime("%Y%m%d_%H%M%S") + ".zarr"
                     node.stop_recording(save_name)
+                    exit()
             except queue.Empty:
                 pass  # 队列为空，继续循环
 

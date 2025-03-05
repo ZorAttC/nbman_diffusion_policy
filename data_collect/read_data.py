@@ -1,12 +1,14 @@
 import zarr
 import numpy as np
+import argparse
+
+# 解析命令行参数
+parser = argparse.ArgumentParser(description='Read data from a zarr file.')
+parser.add_argument('-f', '--file', type=str, required=True, help='Path to the zarr file')
+args = parser.parse_args()
 
 # 打开 zarr 文件
-loaded = zarr.open('/home/docker_user/nbman_diffusion_policy/data/test20250224_201520.zarr', mode='r')
-
-# 读取 timestamps
-timestamps = loaded['timestamps'][:]
-print("Timestamps:", timestamps if timestamps.size > 0 else "No timestamps")
+loaded = zarr.open(args.file, mode='r')
 
 # 读取 states
 states_timestamps = loaded['states/timestamps'][:]
@@ -23,7 +25,7 @@ actions_timestamps = loaded['actions/timestamps'][:]
 if actions_timestamps.size > 0:
     actions_data = loaded['actions/data'][:]  # shape: (n_samples, 26)
     actions = [(ts, data) for ts, data in zip(actions_timestamps, actions_data)]
-    print("First action (timestamp, data):", actions[0])
+    print("First action (timestamp, data):", actions[1:3])
 else:
     actions = []
     print("No actions stored")
@@ -50,7 +52,6 @@ else:
 
 # 重构数据字典
 data_reconstructed = {
-    'timestamps': timestamps,
     'states': states,
     'actions': actions,
     'images': images,
@@ -59,7 +60,6 @@ data_reconstructed = {
 
 # 验证重构数据
 print("\nReconstructed data summary:")
-print("Number of timestamps:", len(data_reconstructed['timestamps']))
 print("Number of states:", len(data_reconstructed['states']))
 print("Number of actions:", len(data_reconstructed['actions']))
 print("Number of images:", len(data_reconstructed['images']))
