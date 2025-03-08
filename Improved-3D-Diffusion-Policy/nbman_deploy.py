@@ -20,10 +20,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 from diffusion_policy_3d.common.multi_realsense import MultiRealSense
 
-zenoh_path="/home/gr1p24ap0049/projects/gr1-dex-real/teleop-zenoh"
-sys.path.append(zenoh_path)
-from communication import *
-from retarget import ArmRetarget
+import datetime
 
 
 import numpy as np
@@ -39,176 +36,9 @@ from std_msgs.msg import Float64MultiArray
 from cv_bridge import CvBridge
 import sensor_msgs_py.point_cloud2 as pc2
 
-class CommunicationNode(Node):
-    def __init__(self):
-        super().__init__('idp3_communication_node')
+from communication_node import CommunicationNode
+import zarr
 
-        # 定义 QoS 策略为 BEST_EFFORT
-        qos = QoSProfile(
-            depth=1,  # 队列深度
-            reliability=QoSReliabilityPolicy.BEST_EFFORT  # 设置为尽力而为
-        )
-        self.bridge = CvBridge()
-        
-        self.left_arm_publisher_ = self.create_publisher(PoseStamped, "/left_arm_ik_controller/commands", 10)
-        self.right_arm_publisher_ = self.create_publisher(PoseStamped, "/right_arm_ik_controller/commands", 10)
-        self.left_hand_publisher_ = self.create_publisher(Float64MultiArray, "/left_hand_controller/commands", 10)
-        self.right_hand_publisher_ = self.create_publisher(Float64MultiArray, "/right_hand_controller/commands", 10)
-
-
-        self.joint_state_sub = self.node.create_subscription(
-            JointState,
-            '/joint_states',
-            self.joint_state_callback,
-            qos)
-        
-        self.image_sub = self.node.create_subscription(
-            Image,
-            '/camera/color/image_raw',
-            self.image_callback,
-            qos)
-        
-        self.pointcloud_sub = self.node.create_subscription(
-            PointCloud2,
-            '/camera/depth/points',
-            self.pointcloud_callback,
-            qos)
-        
-        self.latest_joint_states = None
-        self.latest_image = None
-        self.latest_pointcloud = None
-
-    def joint_state_callback(self, msg):
-        
-        right_hand_joint = np.zeros((1, 6), dtype=np.float32)
-        left_hand_joint = np.zeros((1, 6), dtype=np.float32)
-        right_arm_joint = np.zeros((1, 6), dtype=np.float32)
-        left_arm_joint = np.zeros((1, 6), dtype=np.float32)
-
-        for name in msg.name:
-            if "right_joint1" in name:
-                right_arm_joint[0][0] = msg.position[msg.name.index(name)]
-            if "right_joint2" in name:
-                right_arm_joint[0][1] = msg.position[msg.name.index(name)]
-            if "right_joint3" in name:
-                right_arm_joint[0][2] = msg.position[msg.name.index(name)]
-            if "right_joint4" in name:
-                right_arm_joint[0][3] = msg.position[msg.name.index(name)]
-            if "right_joint5" in name:
-                right_arm_joint[0][4] = msg.position[msg.name.index(name)]
-            if "right_joint6" in name:
-                right_arm_joint[0][5] = msg.position[msg.name.index(name)]
-            
-            if "left_joint1" in name:
-                left_arm_joint[0][0] = msg.position[msg.name.index(name)]
-            if "left_joint2" in name:
-                left_arm_joint[0][1] = msg.position[msg.name.index(name)]
-            if "left_joint3" in name:
-                left_arm_joint[0][2] = msg.position[msg.name.index(name)]
-            if "left_joint4" in name:
-                left_arm_joint[0][3] = msg.position[msg.name.index(name)]
-            if "left_joint5" in name:
-                left_arm_joint[0][4] = msg.position[msg.name.index(name)]
-            if "left_joint6" in name:
-                left_arm_joint[0][5] = msg.position[msg.name.index(name)]
-            
-            if "left_hand_thumb_rotation" in name:
-                left_hand_joint[0][0] = msg.effort[msg.name.index(name)]
-            if "left_hand_thumb_bend" in name:
-                left_hand_joint[0][1] = msg.effort[msg.name.index(name)]
-            if "left_hand_index" in name:
-                left_hand_joint[0][2] = msg.effort[msg.name.index(name)]
-            if "left_hand_middle" in name:
-                left_hand_joint[0][3] = msg.effort[msg.name.index(name)]
-            if "left_hand_ring" in name:
-                left_hand_joint[0][4] = msg.effort[msg.name.index(name)]
-            if "left_hand_pinky" in name:
-                left_hand_joint[0][5] = msg.effort[msg.name.index(name)]
-            
-            if "right_hand_thumb_rotation" in name:
-                right_hand_joint[0][0] = msg.effort[msg.name.index(name)]
-            if "right_hand_thumb_bend" in name:
-                right_hand_joint[0][1] = msg.effort[msg.name.index(name)]
-            if "right_hand_index" in name:
-                right_hand_joint[0][2] = msg.effort[msg.name.index(name)]
-            if "right_hand_middle" in name:
-                right_hand_joint[0][3] = msg.effort[msg.name.index(name)]
-            if "right_hand_ring" in name:
-                right_hand_joint[0][4] = msg.effort[msg.name.index(name)]
-            if "right_hand_pinky" in name:
-                right_hand_joint[0][5] = msg.effort[msg.name.index(name)]
-        
-            state = np.concatenate([right_arm_joint, left_arm_joint, right_hand_joint, left_hand_joint], axis=0)
-            self.latest_joint_states = state
-
-    def image_callback(self, msg):
-        # 解析 Image 消息为 numpy 数组
-        self.latest_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        self.latest_image = np.array(self.latest_image, dtype=np.uint8)
-
-    def pointcloud_callback(self, msg):
-        # 解析 PointCloud2 消息为 xyzrgb 格式的 numpy 数组
-        points_list = []
-        for point in pc2.read_points(msg, field_names=("x", "y", "z", "rgb"), skip_nans=True):
-            x, y, z, rgb = point
-            r = (rgb & 0x00FF0000) >> 16
-            g = (rgb & 0x0000FF00) >> 8
-            b = (rgb & 0x000000FF)
-            points_list.append([x, y, z, r, g, b])
-        self.latest_pointcloud = np.array(points_list, dtype=np.float32)
-
-    def spin_once(self):
-        rclpy.spin_once(self.node)
-
-    def publish_arm_pose(self, right_hand_pose=None, left_hand_pose=None):
-        if right_hand_pose is not None:
-            right_hand_pose_msg = PoseStamped()
-            right_hand_pose_msg.pose.position.x = right_hand_pose[0]
-            right_hand_pose_msg.pose.position.y = right_hand_pose[1]
-            right_hand_pose_msg.pose.position.z = right_hand_pose[2]
-            right_hand_pose_msg.pose.orientation.x = right_hand_pose[3]
-            right_hand_pose_msg.pose.orientation.y = right_hand_pose[4]
-            right_hand_pose_msg.pose.orientation.z = right_hand_pose[5]
-            right_hand_pose_msg.pose.orientation.w = right_hand_pose[6]
-            right_hand_pose_msg.header.frame_id = "user_head"
-            right_hand_pose_msg.header.stamp = self.get_clock().now().to_msg()
-            self.right_arm_publisher_.publish(right_hand_pose_msg)
-
-        if left_hand_pose is not None:
-            left_hand_pose_msg = PoseStamped()
-            left_hand_pose_msg.pose.position.x = left_hand_pose[0]
-            left_hand_pose_msg.pose.position.y = left_hand_pose[1]
-            left_hand_pose_msg.pose.position.z = left_hand_pose[2]
-            left_hand_pose_msg.pose.orientation.x = left_hand_pose[3]
-            left_hand_pose_msg.pose.orientation.y = left_hand_pose[4]
-            left_hand_pose_msg.pose.orientation.z = left_hand_pose[5]
-            left_hand_pose_msg.pose.orientation.w = left_hand_pose[6]
-            left_hand_pose_msg.header.frame_id = "user_head"
-            left_hand_pose_msg.header.stamp = self.get_clock().now().to_msg()
-            self.left_arm_publisher_.publish(left_hand_pose_msg)
-
-    def publish_hand_action(self, right_qpos=None, left_qpos=None):
-        if right_qpos is not None:
-            right_hand_msg = Float64MultiArray()
-            right_pinky = (1.7 - right_qpos[4]) * 1000 / 1.7
-            right_ring = (1.38 - right_qpos[6]) * 1000 / 1.38
-            right_middle = (1.13 - right_qpos[2]) * 1000 / 1.13
-            right_index = (1.12 - right_qpos[0]) * 1000 / 1.12
-            right_thumb_string = (0.6 - right_qpos[8]) * 1000 / 0.6
-            right_thumb_motor = (0.42 - right_qpos[9]) * 1000 / 0.42
-            right_hand_msg.data = [right_pinky, right_ring, right_middle, right_index, right_thumb_motor, right_thumb_string]
-            self.right_hand_publisher_.publish(right_hand_msg)
-
-        if left_qpos is not None:
-            left_hand_msg = Float64MultiArray()
-            left_pinky = (1.7 - left_qpos[4]) * 1000 / 1.7
-            left_ring = (1.38 - left_qpos[6]) * 1000 / 1.38
-            left_middle = (1.13 - left_qpos[2]) * 1000 / 1.13
-            left_index = (1.12 - left_qpos[0]) * 1000 / 1.12
-            left_thumb_string = (0.6 - left_qpos[8]) * 1000 / 0.6
-            left_thumb_motor = (0.42 - left_qpos[9]) * 1000 / 0.42
-            left_hand_msg.data = [left_pinky, left_ring, left_middle, left_index, left_thumb_motor, left_thumb_string]
-            self.left_hand_publisher_.publish(left_hand_msg)
 class NbManEnvInference:
     """
     The deployment is running on the Orin AGX of the robot.
@@ -223,8 +53,6 @@ class NbManEnvInference:
         self.use_image = use_image
         
         
-        
-
         # horizon
         self.obs_horizon = obs_horizon
         self.action_horizon = action_horizon
@@ -236,7 +64,12 @@ class NbManEnvInference:
             self.device = torch.device("cpu")
         
         # Communication
-        self.communication=CommunicationNode()
+        self.communication_node=CommunicationNode()
+
+        # Data buffer init
+        self.color_array, self.depth_array, self.cloud_array = [], [], []
+        self.env_qpos_array = []
+        self.action_array = []
         
         
     
@@ -250,18 +83,14 @@ class NbManEnvInference:
             filtered_armpos = filtered_act[:14] #四元数
             filtered_handpos = filtered_act[-12:]
           
-            self.communication.publish_arm_pose(filtered_armpos[6:], filtered_armpos[:6])#控制双臂
-            self.communication.publish_hand_action(filtered_handpos[6:], filtered_handpos[:6])#控制双手
+            self.communication_node.publish_arm_pose(filtered_armpos[6:], filtered_armpos[:6])#控制双臂
+            self.communication_node.publish_hand_action(filtered_handpos[5:], filtered_handpos[:5])#控制双手
             
             
-            self.communication.spin_once()#获取最新数据
-            self.cloud_array.append(self.communication.latest_pointcloud)
-            self.color_array.append(self.communication.latest_image)
-            # self.depth_array.append(self.communication.latest_depth)
-      
-            states=self.communication.latest_joint_states()
-           
-            self.env_qpos_array.append(states)
+            self.communication_node.spin_once()#获取最新数据
+            # self.depth_array.append(self.communication_node.latest_depth)
+            self.env_qpos_array.append(self.communication_node.get_latest_joint_states())
+         
             
         
         agent_pos = np.stack(self.env_qpos_array[-self.obs_horizon:], axis=0)
@@ -279,54 +108,39 @@ class NbManEnvInference:
         return obs_dict
     
     def reset(self, first_init=True):
+        if self.communication_node is None:
+            print("communication node is none")
+            return
         # init buffer
         self.color_array, self.depth_array, self.cloud_array = [], [], []
         self.env_qpos_array = []
         self.action_array = []
     
-    
-        # pos init
-        qpos_init1 = np.array([-np.pi / 12, 0, 0, -1.6, 0, 0, 0, 
-            -np.pi / 12, 0, 0, -1.6, 0, 0, 0])
-        qpos_init2 = np.array([-np.pi / 12, 0, 1.5, -1.6, 0, 0, 0, 
-                -np.pi / 12, 0, -1.5, -1.6, 0, 0, 0])
-        hand_init = np.ones(12)
+        # Anchor: pos init
+        right_arm_init_pose = np.array([1,2,3,4,5,6,7],dtype=np.float32)
+        left_arm_init_pose = np.array([1,2,3,4,5,6,7],dtype=np.float32)
+        hand_init = np.ones(6)
         # hand_init = np.ones(12) * 0
 
-        
-
-        upbody_initpos = np.concatenate([qpos_init1])
-        self.upbody_comm.init_set_pos(upbody_initpos)
-        q_14d = upbody_initpos.copy()
+        execute_time=3
+        while rclpy.ok() and execute_time>0:
+            self.communication_node.publish_arm_pose(right_arm_init_pose, left_arm_init_pose)
+            self.communication_node.publish_hand_action(hand_init, hand_init)
+            time.sleep(0.01)
+            execute_time-=0.01
             
-        body_action = np.zeros(6)
-        
-        # this is a must for eef pos alignment
-        arm_pos, arm_rot_quat = action_util.init_arm_pos, action_util.init_arm_quat
-        q_14d = self.arm_solver.ik(q_14d, arm_pos, arm_rot_quat)
-        self.upbody_comm.init_set_pos(q_14d)
-        time.sleep(2)
         
         print("Robot ready!")
         
         # ======== INIT ==========
         # camera.start()
-        cam_dict = self.camera()
-        self.color_array.append(cam_dict['color'])
-        self.depth_array.append(cam_dict['depth'])
-        self.cloud_array.append(cam_dict['point_cloud'])
+        self.communication_node.spin_once()
+        self.color_array.append(self.communication_node.get_latest_image())
+        # self.depth_array.append(communication_node.get_latest())
+        self.cloud_array.append(self.communication_node.get_latest_pointcloud())
+        self.env_qpos_array.append(self.communication_node.get_latest_joint_states())
 
-        try:
-            hand_qpos = self.hand_comm.get_qpos()
-        except:
-            cprint("fail to fetch hand qpos. use default.", "red")
-            hand_qpos = np.ones(12)
-
-        env_qpos = np.concatenate([self.upbody_comm.get_pos(), hand_qpos])
-        self.env_qpos_array.append(env_qpos)
-                        
-        self.q_14d = q_14d
-        self.body_action = body_action
+     
     
 
         agent_pos = np.stack([self.env_qpos_array[-1]]*self.obs_horizon, axis=0)
@@ -341,9 +155,54 @@ class NbManEnvInference:
         if self.use_image:
             obs_dict['image'] = torch.from_numpy(obs_img).permute(0, 3, 1, 2).unsqueeze(0)
             
-        self.spin_once()
+        self.communication_node.spin_once()
         return obs_dict
+    def save_data(self, save_path):
+        # 创建 zarr 文件
+        store = zarr.DirectoryStore(save_path)
+        root = zarr.group(store=store, overwrite=True)
+        
+        # 存储 states
+        root.create_group('states')
+        if self.env_qpos_array:
+            states_data = np.array(self.env_qpos_array)  # shape: (n_samples, 24)
+            root['states'].array('data', states_data, chunks=(1000, 24), dtype='float64')
+            print(f"Saved {len(self.env_qpos_array)} states")
+        else:
+            root['states'].array('data', np.array([], dtype=np.float64).reshape(0, 24), chunks=(1000, 24), dtype='float64')
+            print("No states to save, storing empty arrays")
 
+        # 存储 actions
+        root.create_group('actions')
+        if self.action_array:
+            actions_data = np.array(self.action_array)  # shape: (n_samples, 26)
+            root['actions'].array('data', actions_data, chunks=(1000, 26), dtype='float64')
+            print(f"Saved {len(self.action_array)} actions")
+        else:
+            root['actions'].array('data', np.array([], dtype=np.float64).reshape(0, 26), chunks=(1000, 26), dtype='float64')
+            print("No actions to save, storing empty arrays")
+
+        # 存储 images (uint8)
+        root.create_group('images')
+        if self.color_array:
+            images_data = np.array(self.color_array, dtype=np.uint8)  # shape: (n_samples, 224, 224, 3)
+            root['images'].array('data', images_data, chunks=(100, 224, 224, 3), dtype='uint8')
+            print(f"Saved {len(self.color_array)} images")
+        else:
+            root['images'].array('data', np.array([], dtype=np.uint8).reshape(0, 224, 224, 3), chunks=(100, 224, 224, 3), dtype='uint8')
+            print("No images to save, storing empty arrays")
+
+        # 存储 pointclouds (float32，每帧点数可变)
+        pointclouds_group = root.create_group('pointclouds')
+        if self.cloud_array:
+            for i, pc in enumerate(self.cloud_array):
+                pointclouds_group.array(f'data_{i}', pc, chunks=(None, 3), dtype='float32')
+            print(f"Saved {len(self.cloud_array)} pointclouds")
+        else:
+            print("No pointclouds to save")
+
+        # 日志记录
+        print(f"Data saved to {save_path}")
 
 @hydra.main(
     config_path=str(pathlib.Path(__file__).parent.joinpath(
@@ -383,7 +242,7 @@ def main(cfg: OmegaConf):
     num_points = 4096
     use_waist = True
     first_init = True
-    record_data = True
+    record_data = True #记录实验数据
 
     env = NbManEnvInference(obs_horizon=2, action_horizon=action_horizon, device="cpu",
                              use_point_cloud=use_point_cloud,
@@ -406,32 +265,14 @@ def main(cfg: OmegaConf):
         step_count += action_horizon
         print(f"step: {step_count}")
 
-    # if record_data:
-    #     import h5py
-    #     root_dir = "/home/gr1p24ap0049/projects/gr1-learning-real/"
-    #     save_dir = root_dir + "deploy_dir"
-    #     os.makedirs(save_dir, exist_ok=True)
-        
-    #     record_file_name = f"{save_dir}/demo.h5"
-    #     color_array = np.array(env.color_array)
-    #     depth_array = np.array(env.depth_array)
-    #     cloud_array = np.array(env.cloud_array)
-    #     qpos_array = np.array(env.qpos_array)
-    #     with h5py.File(record_file_name, "w") as f:
-    #         f.create_dataset("color", data=np.array(color_array))
-    #         f.create_dataset("depth", data=np.array(depth_array))
-    #         f.create_dataset("cloud", data=np.array(cloud_array))
-    #         f.create_dataset("qpos", data=np.array(qpos_array))
-        
-    #     choice = input("whether to rename: y/n")
-    #     if choice == "y":
-    #         renamed = input("file rename:")
-    #         os.rename(src=record_file_name, dst=record_file_name.replace("demo.h5", renamed+'.h5'))
-    #         new_name = record_file_name.replace("demo.h5", renamed+'.h5')
-    #         cprint(f"save data at step: {roll_out_length} in {new_name}", "yellow")
-    #     else:
-    #         cprint(f"save data at step: {roll_out_length} in {record_file_name}", "yellow")
-
+    if record_data:
+       
+        save_dir = "deploy_dir"
+        os.makedirs(save_dir, exist_ok=True)
+        save_name = 'test'+datetime.now().strftime("%Y%m%d_%H%M%S") + ".zarr"
+        save_path = os.path.join(save_dir, save_name)
+        env.save_data(save_path)
+        cprint(f"Data saved to {save_path}", 'green')
 
 if __name__ == "__main__":
     main()
